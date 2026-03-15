@@ -1,5 +1,5 @@
-.equ N, 10
-.equ NUM_STEPS, 10
+.equ N, 100
+.equ NUM_STEPS, 100
 
 # btw, .equ does not work with types like floats. unlike li, there's no fli instruction, so floats gotta be kept in memory. 
 
@@ -19,6 +19,12 @@ half_dt:
 zero_f:
     .float 0.0          # reset accelerations to 0
 
+
+mmap_path:
+    .asciz "nbody_shared.bin"  # must match the filename in Python
+
+mmap_addr:
+    .quad 0                    # will store the address after mmap() call
 
 # 
 # arrays for all the bodies - N elements each, 4 bytes per element
@@ -57,6 +63,12 @@ main:
     # we need to compute the initial accelerations, since the leapfrog integration requires a[t = 0] before the first half_kick
     call calculate_forces
 
+    la      a0, mmap_path       # arg0 = path
+    li      a1, 4 + N * 4 * 3  # arg1 = total file size (flag + 3 arrays)
+    call    open_mmap           # returns pointer in a0
+    la      t0, mmap_addr
+    sd      a0, 0(t0)           # save the pointer
+
     # --- DEBUG CHECKPOINT 1: print accs after initial force calc ---
     ## if all 0.0 then calculate_forces is broken. remove once verified.
     la a0, a_x
@@ -89,10 +101,75 @@ main_loop:
     # leapfrog step 4: Kick (half timestep again)
     call kick_half_step
 
+    call drift 
+    # Leapfrog Step 3: recalculate forces at new positions
+    call calculate_forces
+    # leapfrog step 4: Kick (half timestep again)
+    call kick_half_step
+
+    # ------------- write positions to mmap after each completed step ----
+    # wait until Python is done reading (flag must be 0 before we write)
+wait_flag:
+    la      t0, mmap_addr       # t0 = address of our stored mmap pointer
+    ld      t1, 0(t0)           # t1 = the actual mmap base address
+    lw      t2, 0(t1)           # t2 = current flag value
+    bnez    t2, wait_flag       # if flag != 0 Python is still reading, spin
+
+    # write p_x, p_y, p_z into the mapped region
+    addi    t3, t1, 4           # t3 = skip the 4-byte flag, start of data
+    la      t4, p_x             # t4 = our p_x array
+    li      t5, 0               # t5 = i = 0
+    li      t6, N               # t6 = loop limit
+
+write_loop:
+    bge     t5, t6, write_loop_end
+    slli    a0, t5, 2           # a0 = i * 4 (byte offset)
+
+    add     a1, t4, a0          # a1 = &p_x[i]
+    flw     ft0, 0(a1)          # ft0 = p_x[i]
+    add     a2, t3, a0          # a2 = &mmap[i] in p_x block
+    fsw     ft0, 0(a2)          # write p_x[i]
+
+    la      a1, p_y             # load p_y base each iteration
+    add     a1, a1, a0          # a1 = &p_y[i]
+    flw     ft0, 0(a1)          # ft0 = p_y[i]
+    li      a3, N
+    slli    a3, a3, 2           # a3 = N * 4 (size of one array in bytes)
+    add     a2, t3, a3
+    add     a2, a2, a0          # a2 = &mmap[i] in p_y block
+    fsw     ft0, 0(a2)          # write p_y[i]
+
+    la      a1, p_z             # load p_z base each iteration
+    add     a1, a1, a0          # a1 = &p_z[i]
+    flw     ft0, 0(a1)          # ft0 = p_z[i]
+    slli    a3, a3, 1           # a3 = N * 8 (offset to p_z block)
+    add     a2, t3, a3
+    add     a2, a2, a0          # a2 = &mmap[i] in p_z block
+    fsw     ft0, 0(a2)          # write p_z[i]
+
+    addi    t5, t5, 1           # i++
+    j       write_loop
+
+write_loop_end:
+    li      t2, 1               # set flag to 1 — tell Python it can read now
+    sw      t2, 0(t1)
+
+    # ---------------------- END MMAP WRITE ----
+
+    # restore the loop state after all functions
+    ld s1, 0(sp)
+    ld s0, 8(sp)
+    addi sp, sp, 16
+
+    addi s0, s0, 1          # step_counter++
+    j main_loop
+
     # restore the loop state after all functions
     ld s1, 0(sp)            # retrieve NUM_STEPS
     ld s0, 8(sp)            # retrieve step counter
     addi sp, sp, 16         # deallocate
+
+    
 
     addi s0, s0, 1          # step_counter++
     j main_loop             # start a new iteration
@@ -382,7 +459,7 @@ inner_loop_end:
     j outer_loop
 
 outer_loop_end:
-    # epilogue: restore everything in reverse order
+    # restore everything in reverse order
     fld fs11, 0(sp)
     fld fs10, 8(sp)
     fld fs9, 16(sp)

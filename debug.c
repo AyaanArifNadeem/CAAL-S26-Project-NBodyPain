@@ -6,6 +6,10 @@
  */
 
 #include <stdio.h>
+#include <sys/mman.h>
+#include <fcntl.h>
+#include <unistd.h>
+
 
 /*
  * print_state — called from assembly via the a0-a6 argument registers
@@ -59,3 +63,12 @@ void print_mass(float *m, int n)
         printf("body %d | mass = %+.4e\n", i, m[i]);
     printf("---\n");
 }
+
+void* open_mmap(const char* path, int size) {
+    int fd = open(path, O_RDWR);
+    if (fd < 0) return NULL;
+    void* addr = mmap(NULL, size, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
+    close(fd);
+    return addr;
+}
+
