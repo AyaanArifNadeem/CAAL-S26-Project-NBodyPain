@@ -1,0 +1,11 @@
+8.2.1
+   riscv64-linux-gnu-gcc -static -march=rv64gcv -o clamp_test main.c clamp.S
+   qemu-riscv64 -cpu rv64,v=true ./clamp_test
+
+8.2.2
+   riscv64-linux-gnu-gcc -static -march=rv64gcv -o nega_test main2.c NegCount.S
+   qemu-riscv64 -cpu rv64,v=true ./nega_test
+
+8.2.3
+   riscv64-linux-gnu-gcc -static -march=rv64gcv -o dp main3.c dotProd.S
+   qemu-riscv64 -cpu rv64,v=true ./dp
